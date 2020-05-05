@@ -2,7 +2,7 @@ import os
 
 os.environ['CUDA_VISIBLE_DEVICES'] = ''
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-def pool_job(f_model_weights, g_model_weights, h_model_weights, PPO_data, lock):
+def pool_job(f_model_weights, g_model_weights, h_model_weights, PPO_data, g):
 	import keras
 	import numpy as np
 
@@ -20,9 +20,8 @@ def pool_job(f_model_weights, g_model_weights, h_model_weights, PPO_data, lock):
 	session = tf.Session(config=config)
 	K.set_session(session)
 
-
 	lambd = 0.001 #L2 regularization
-	resblocks = 2
+	resblocks = 5
 	filters = 32
 
 	def stem(X, filters, stage="stem", size=3):
@@ -42,7 +41,7 @@ def pool_job(f_model_weights, g_model_weights, h_model_weights, PPO_data, lock):
 		X = Activation('relu')(X)
 		return X
 
-	image = Input(shape=(40, 40, 27)) #Masked images of last 10 board frames + 6 planes of info
+	image = Input(shape=(20, 20, 27)) #Masked images of last 10 board frames + 6 planes of info
 	
 	#Stem for our resnet
 	X = stem(image, filters)
@@ -90,21 +89,27 @@ def pool_job(f_model_weights, g_model_weights, h_model_weights, PPO_data, lock):
 	from environ import Weapon, Board, Player, Box, Team, Direction
 	from helper import to_Direction, data_to_planes
 	from MCTS import muMCTS
-	for _ in range(8):
-		frames = 155
+	for _ in range(g):
+		frames = 50
 
-		ak = Weapon(50, 1, 30, 2, 100)
-		awp = Weapon(50, 1, 30, 2, 100)
+		ak = Weapon(50, 1, 30, 1.0, 100)
+		awp = Weapon(50, 1, 30, 1.0, 100)
 		Map = Board()
-		t_spawn = np.random.rand()*40 - 20
-		ct_spawn = np.random.rand()*40 - 20
-		t = Player(t_spawn, 16, Team.T, ak, 0, Map)
-		ct = Player(ct_spawn, -16, Team.CT, awp, 0, Map)
+		t_spawn = 0
+		ct_spawn = 0
+		t = Player(t_spawn, 8, Team.T, ak, 0, Map)
+		ct = Player(ct_spawn, -8, Team.CT, awp, 0, Map)
 
-		box1 = Box(10, -7.5, -10, Map)
-		box2 = Box(10, 13.5, -10, Map)
-		box3 = Box(10, -10, 10, Map)
-		box4 = Box(10, 10, 10, Map)
+		#Mid
+		Mid = Box(5.0, 16.0, 0.0, 0.0, Map)
+		
+		#A site
+		Asite = Box(4.0, 3.0, 6.0, 6.5, Map)
+		Asite = Box(2.5, 3.0, 7.0, -3.5, Map)
+		
+		#Bsite
+		Bsite = Box(5.0, 5.0, -5.0, -1.0, Map)
+		
 
 		Map.init_observation()
 		T_frames = [] #Will hold the last 10 frames
@@ -112,12 +117,12 @@ def pool_job(f_model_weights, g_model_weights, h_model_weights, PPO_data, lock):
 
 		mask_T = t.view_mask()
 		obs_T = Map.observation
-		obs_T[0] = obs_T[1] * mask_T
+		obs_T[0] = obs_T[0] * mask_T
 		obs_T[1] = obs_T[1] * mask_T
 
 		mask_CT = ct.view_mask()
 		obs_CT = Map.observation
-		obs_CT[0] = obs_CT[1] * mask_CT
+		obs_CT[0] = obs_CT[0] * mask_CT
 		obs_CT[1] = obs_CT[1] * mask_CT
 
 		#[model.input, target, expert, action_t, old_latent, new_latent]
@@ -143,16 +148,17 @@ def pool_job(f_model_weights, g_model_weights, h_model_weights, PPO_data, lock):
 		final_time = 0
 
 		#Set up current data to be sent to our NN
+		#hp, wep, time, team, clip, smoke, plant
 		plant = False
-		T_data = [t.hp/100, 0.0, 1.0, 0, t.weapon.clip, t.smoke, plant]
+		T_data = [t.hp/100, 0.0, 1.0, Team.T, t.weapon.clip, t.smoke, plant]
 		T_image = data_to_planes(T_data, T_frames)
 		T_image = np.array(T_image)
-		T_image = np.reshape(T_image, [1, 40, 40, 27])
+		T_image = np.reshape(T_image, [1, 20, 20, 27])
 
-		CT_data = [ct.hp/100, 0.0, 1.0, 1, ct.weapon.clip, ct.smoke, plant]
+		CT_data = [ct.hp/100, 0.0, 1.0, Team.CT, ct.weapon.clip, ct.smoke, plant]
 		CT_image = data_to_planes(CT_data, CT_frames)
 		CT_image = np.array(CT_image)
-		CT_image = np.reshape(CT_image, [1, 40, 40, 27])
+		CT_image = np.reshape(CT_image, [1, 20, 20, 27])
 
 		t_old_latent = f_model.predict(T_image)
 		ct_old_latent = f_model.predict(CT_image)
@@ -161,22 +167,23 @@ def pool_job(f_model_weights, g_model_weights, h_model_weights, PPO_data, lock):
 		for time in range(frames):
 			final_time = time + 1
 			time_left = (frames - time)/(frames) #Time left scaled from 0 to 1
-			hiddenT = f_model.predict(T_image)
-			t_policy, t_value = g_model.predict(hiddenT)
-			hiddenCT = f_model.predict(CT_image)
-			ct_policy, ct_value = g_model.predict(hiddenCT)
+			if plant:
+				time_left = np.minimum(time_left, Map.timer/10)
+				
+			t_expert, t_value, t_policy = muMCTS(T_image, False, f_model, g_model, h_model, simulations=0)
+			ct_expert, ct_value, ct_policy = muMCTS(CT_image, True, f_model, g_model, h_model, simulations=0)
 			
 			#T should have slight advantage in game loop processing since CT wins
 			#by time
-			direction, t_angle, t_a1 = to_Direction(t_policy, temp=1.0)
+			direction, t_angle, t_a1 = to_Direction(t_expert, temp=1.0)
 			t.set_view(t.view + t_angle) #Implement our view policy
 			
 			#Add T data to PPO lists
-			r = (ct.hp - t.hp)/100
+			r = np.clip((ct.hp - t.hp)/100 - Map.dist_to_site(t.x, t.y), -1, 1)
 			model_image.append(T_image)
 			target.append(r)
 			advantages.append(t_value)
-			expert.append(t_policy)
+			expert.append(t_expert)
 			action.append(t_a1)
 			
 			powers.append(time)
@@ -188,7 +195,7 @@ def pool_job(f_model_weights, g_model_weights, h_model_weights, PPO_data, lock):
 				planted = t.plant()
 				if planted:
 					plant = True
-					Map.timer = 15
+					Map.timer = 10
 			elif direction == -3:
 				t.fire_smoke()
 			else:
@@ -200,15 +207,15 @@ def pool_job(f_model_weights, g_model_weights, h_model_weights, PPO_data, lock):
 				break
 				
 			#Process CT
-			direction, ct_angle, ct_a1 = to_Direction(ct_policy, temp=1.0)
+			direction, ct_angle, ct_a1 = to_Direction(ct_expert, temp=1.0)
 			ct.set_view(ct.view + ct_angle) #Implement our view policy
 			
 			#Add CT data to PPO lists
-			r = (ct.hp - t.hp)/100
+			r = np.clip((ct.hp - t.hp)/100, -1, 1)
 			model_image.append(CT_image)
 			target.append(r)
 			advantages.append(ct_value)
-			expert.append(ct_policy)
+			expert.append(ct_expert)
 			action.append(ct_a1)
 			
 			
@@ -235,12 +242,12 @@ def pool_job(f_model_weights, g_model_weights, h_model_weights, PPO_data, lock):
 			Map.update_observation()
 			mask_T = t.view_mask()
 			obs_T = Map.observation
-			obs_T[0] = obs_T[1] * mask_T
+			obs_T[0] = obs_T[0] * mask_T
 			obs_T[1] = obs_T[1] * mask_T
 
 			mask_CT = ct.view_mask()
 			obs_CT = Map.observation
-			obs_CT[0] = obs_CT[1] * mask_CT
+			obs_CT[0] = obs_CT[0] * mask_CT
 			obs_CT[1] = obs_CT[1] * mask_CT
 			
 			T_frames.append(obs_T)
@@ -249,22 +256,23 @@ def pool_job(f_model_weights, g_model_weights, h_model_weights, PPO_data, lock):
 			CT_frames.pop(0) #Remove the first frame
 			
 			#Set up current data to be sent to our NN
-			T_data = [t.hp/100, 0.0, time_left, 0, t.weapon.clip, t.smoke, plant]
+			#hp, wep, time, team, clip, smoke, plant
+			T_data = [t.hp/100, 0.0, time_left, Team.T, t.weapon.clip, t.smoke, plant]
 			T_image = data_to_planes(T_data, T_frames)
 			T_image = np.array(T_image)
-			T_image = np.reshape(T_image, [1, 40, 40, 27])
+			T_image = np.reshape(T_image, [1, 20, 20, 27])
 			
-			CT_data = [ct.hp/100, 1.0, time_left, 1, ct.weapon.clip, ct.smoke, plant]
+			CT_data = [ct.hp/100, 0.0, time_left, Team.CT, ct.weapon.clip, ct.smoke, plant]
 			CT_image = data_to_planes(CT_data, CT_frames)
 			CT_image = np.array(CT_image)
-			CT_image = np.reshape(CT_image, [1, 40, 40, 27])
+			CT_image = np.reshape(CT_image, [1, 20, 20, 27])
 			
 			
 			
 			t_new_latent = f_model.predict(T_image)
 			ct_new_latent = f_model.predict(CT_image)
 			
-			#No counterfactual regret min
+			#counterfactual regret min
 			action_t.append(t_a1)
 			old_latent.append(t_old_latent)
 			new_latent.append(t_new_latent)
@@ -292,15 +300,14 @@ def pool_job(f_model_weights, g_model_weights, h_model_weights, PPO_data, lock):
 		reward = 1
 		if not ct_won:
 			reward = -1
+
 		for j in range(len(target)):
 			power = powers[-1] - powers[j]
-			coeff = np.power(0.99, power)
+			coeff = np.power(0.9, power)
 			target[j] = (reward * coeff) + target[j]*(1-coeff)
 			advantages[j] = (target[j] - advantages[j]) * turn[j]
 
-		lock.acquire()
-		PPO_data.append([model_image, target, expert, action_t, old_latent, new_latent, advantages, action])
-		lock.release()
+		PPO_data.append([model_image, target, expert, action, old_latent, new_latent, advantages, action_t])
 
 if __name__ == "__main__":
 	import numpy as np
@@ -313,19 +320,71 @@ if __name__ == "__main__":
 	import numpy as np
 	from tqdm import tqdm
 	from multiprocessing import Process, Lock, Manager, Queue
-	from helper import save_model
+	from helper import save_model, load_model
 
 	queue = Queue()
 	manager = Manager()
 	lock = Lock()
 
+	def shuffle_data(a, b, c, d, e, f, z, y):
+		import numpy as np
+		a_s = np.copy(a)
+		b_s = np.copy(b)
+		c_s = np.copy(c)
+		d_s = np.copy(d)
+		e_s = np.copy(e)
+		z_s = np.copy(z)
+		f_s = np.copy(f)
+		y_s = np.copy(y)
 
+		rand_state = np.random.get_state()
+		np.random.shuffle(a_s)
+		np.random.set_state(rand_state)
+		np.random.shuffle(b_s)
+		np.random.set_state(rand_state)
+		np.random.shuffle(c_s)
+		np.random.set_state(rand_state)
+		np.random.shuffle(d_s)
+		np.random.set_state(rand_state)
+		np.random.shuffle(e_s)
+		np.random.set_state(rand_state)
+		np.random.shuffle(z_s)
+		np.random.set_state(rand_state)
+		np.random.shuffle(y_s)
+		np.random.set_state(rand_state)
+		np.random.shuffle(f_s)
+
+
+		return a_s, b_s, c_s, d_s, e_s, f_s, z_s, y_s
 	
-	model, fmodel, gmodel, hmodel, trainfn, trainh = create_model(32, resblocks=2)
-	workers = 9
-	iterations = 100
-	epochs = 10
+	model, fmodel, gmodel, hmodel, trainfn, trainh = create_model(32, resblocks=5)
+	"""
+	mod = load_model("PPO_CSGO.json", "PPO_weights.h5")
+	fmod = load_model("PPO_CSGOf.json", "PPO_weightsf.h5")
+	gmod =load_model("PPO_CSGOg.json", "PPO_weightsg.h5")
+	hmod = load_model("PPO_CSGOh.json", "PPO_weightsh.h5")
 
+	model.set_weights(mod.get_weights())
+	fmodel.set_weights(fmod.get_weights())
+	gmodel.set_weights(gmod.get_weights())
+	hmodel.set_weights(hmod.get_weights())
+	"""
+
+	workers = 5
+	games = 10
+	iterations = 1002
+	epochs = 10
+	model_image = []
+	targ = []
+	expert = []
+	action_t = []
+	old_latent = []
+	new_latent = []
+	adv = []
+	act = []
+
+	n = 0
+	l = 0
 	for it in range(iterations):
 		PPO_data = manager.list()
 		f_weights = fmodel.get_weights()
@@ -336,8 +395,7 @@ if __name__ == "__main__":
 		print("Gathering data...")
 		processes = []
 		for _ in range(workers):
-			
-			p = Process(target=pool_job, args=(f_weights, g_weights, h_weights, PPO_data, lock))
+			p = Process(target=pool_job, args=(f_weights, g_weights, h_weights, PPO_data, games))
 			p.start()
 			processes.append(p)
 			
@@ -346,73 +404,82 @@ if __name__ == "__main__":
 		for i in tqdm(range(workers)):
 			processes[i].join()
 
-		model_image = []
-		targ = []
-		expert = []
-		action_t = []
-		old_latent = []
-		new_latent = []
-		adv = []
-		act = []
-		print("Loading data...")
-		for i in tqdm(range(len(PPO_data))):
-			data = PPO_data[i]
-			if i == 0:
-				model_image = np.reshape(np.array(data[0]), [-1, 40, 40, 27])
-				targ = np.reshape(np.array(data[1]), [-1, 1])
-				expert = np.reshape(np.array(data[2]), [-1, 63])
-				action_t = np.reshape(np.array(data[3]), [-1, 63])
-				old_latent = np.reshape(np.array(data[4]), [-1, 50])
-				new_latent = np.reshape(np.array(data[5]), [-1, 50])
-				adv = np.reshape(np.array(data[6]), [-1, 1])
-				act = np.reshape(np.array(data[7]), [-1, 63])
-			else:
-				model_image = np.vstack((model_image, np.reshape(np.array(data[0]), [-1, 40, 40, 27])))
-				targ = np.vstack((targ, np.reshape(np.array(data[1]), [-1, 1])))
-				expert = np.vstack((expert, np.reshape(np.array(data[2]), [-1, 63])))
-				action_t = np.vstack((action_t, np.reshape(np.array(data[3]), [-1, 63])))
-				old_latent = np.vstack((old_latent, np.reshape(np.array(data[4]), [-1, 50])))
-				new_latent = np.vstack((new_latent, np.reshape(np.array(data[5]), [-1, 50])))
-				adv = np.vstack((adv, np.reshape(np.array(data[6]), [-1, 1])))
-				act = np.vstack((act, np.reshape(np.array(data[7]), [-1, 63])))
-
-		splits = int(len(targ)/64) #We want batch size of experience to be ~64
-		exp_mi = np.array_split(model_image, splits)
-		exp_targ = np.array_split(targ, splits)
-		exp_expert = np.array_split(expert, splits)
-		exp_adv = np.array_split(adv, splits)
-		exp_act = np.array_split(act, splits)
 		
-		splits2 = int(len(action_t)/64)
-		exp_at = np.array_split(action_t, splits2)
-		exp_ol = np.array_split(old_latent, splits2)
-		exp_nl = np.array_split(new_latent, splits2)
+		print("Loading data...")
+		PPO_data = list(PPO_data)
+		for i in tqdm(range(len(PPO_data))):
+			data = PPO_data.pop(0)
+			if i == 0:
+				model_image = np.reshape(np.array(data.pop(0)), [-1, 20, 20, 27])
+				targ = np.reshape(np.array(data.pop(0)), [-1, 1])
+				expert = np.reshape(np.array(data.pop(0)), [-1, 63])
+				action_t = np.reshape(np.array(data.pop(0)), [-1, 63])
+				old_latent = np.reshape(np.array(data.pop(0)), [-1, 50])
+				new_latent = np.reshape(np.array(data.pop(0)), [-1, 50])
+				adv = np.reshape(np.array(data.pop(0)), [-1, 1])
+				act = np.reshape(np.array(data.pop(0)), [-1, 63])
+			else:
+				model_image = np.append(model_image, np.reshape(np.array(data.pop(0)), [-1, 20, 20, 27]), axis=0)
+				targ = np.append(targ, np.reshape(np.array(data.pop(0)), [-1, 1]), axis=0)
+				expert = np.append(expert, np.reshape(np.array(data.pop(0)), [-1, 63]), axis=0)
+				action_t = np.append(action_t, np.reshape(np.array(data.pop(0)), [-1, 63]), axis=0)
+				old_latent = np.append(old_latent, np.reshape(np.array(data.pop(0)), [-1, 50]), axis=0)
+				new_latent = np.append(new_latent, np.reshape(np.array(data.pop(0)), [-1, 50]), axis=0)
+				adv = np.append(adv, np.reshape(np.array(data.pop(0)), [-1, 1]), axis=0)
+				act = np.append(act, np.reshape(np.array(data.pop(0)), [-1, 63]), axis=0)
+
+		n = len(targ) - l
+		if len(targ) > 30000:
+			m = len(targ) - 30000
+			model_image = model_image[m:]
+			targ = targ[m:]
+			expert = expert[m:]
+			action_t = action_t[m:]
+			old_latent = old_latent[m:]
+			new_latent = new_latent[m:]
+			adv = adv[m:]
+			act = act[m:]
+		#l = len(targ)
+
+		mi, ta, e, ad, at_t, at, ol, nl = shuffle_data(model_image, targ, expert, adv, action_t, act, old_latent, new_latent)
+		splits = int(len(targ)/128) #We want batch size of experience to be ~64
+		exp_mi = np.array_split(mi, splits)
+		exp_targ = np.array_split(ta, splits)
+		exp_expert = np.array_split(e, splits)
+		exp_adv = np.array_split(ad, splits)
+		exp_act = np.array_split(at_t, splits)
+		
+		splits2 = int(len(action_t)/128)
+		exp_at = np.array_split(at, splits2)
+		exp_ol = np.array_split(ol, splits2)
+		exp_nl = np.array_split(nl, splits2)
+
+		
 
 		
 		pe = 0
 		trans = 0
 		mse = 0
-		ent = 0
 		print("Training...")
 		for epoch in tqdm(range(epochs)):
 			for k in range(splits):
 				loss = trainfn([exp_mi[k], exp_targ[k], exp_expert[k], exp_adv[k], exp_act[k]]) 
 				pe += loss[0]
 				mse += loss[1]
-				ent += loss[2]
 			
 			for k in range(splits2):
 				lossT = trainh([exp_ol[k], exp_at[k], exp_nl[k]])
 				trans += lossT[0]
 		
 		print("Iteration ", it, ": action_policy loss: ", pe/(splits*epochs),
-			  " value loss: ", mse/(splits*epochs), "entropy: ", ent/(splits*epochs),
-			  " transition: ", trans/splits2, " Game Length: ", len(targ)/(8*workers*2),
+			  " value loss: ", mse/(splits*epochs)," transition: ", 
+			  trans/(splits2*epochs), " Game Length: ", n/(games*workers*2),
 			 " Data: ", len(targ))
 
+
 		if it % 10 == 1:
-			save_model(model, "mu_CSGO.json", "mu_weights.h5")
-			save_model(fmodel, "mu_CSGOf.json", "mu_weightsf.h5")
-			save_model(gmodel, "mu_CSGOg.json", "mu_weightsg.h5")
-			save_model(hmodel, "mu_CSGOh.json", "mu_weightsh.h5")
+			save_model(model, "PPO_CSGO.json", "PPO_weights.h5")
+			save_model(fmodel, "PPO_CSGOf.json", "PPO_weightsf.h5")
+			save_model(gmodel, "PPO_CSGOg.json", "PPO_weightsg.h5")
+			save_model(hmodel, "PPO_CSGOh.json", "PPO_weightsh.h5")
 
