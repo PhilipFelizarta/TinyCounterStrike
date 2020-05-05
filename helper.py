@@ -50,6 +50,7 @@ def to_Direction(action_policy, temp=1.0):
 
 def data_to_planes(data, frames_array):
 	import numpy as np
+	from environ import Team
 	
 	hp = data[0]
 	wep = data[1]
@@ -58,6 +59,10 @@ def data_to_planes(data, frames_array):
 	ammo = data[4]/30
 	smoke = data[5]
 	plant = data[6]
+	if team == Team.CT:
+		team = 1
+	else:
+		team = 0
 	if smoke:
 		smoke = 1
 	else:
@@ -67,16 +72,16 @@ def data_to_planes(data, frames_array):
 	else:
 		plant = 0
 	
-	hp_plane = np.full((1, 40, 40, 1), hp)
-	ammo_plane = np.full((1, 40, 40, 1), ammo)
-	smoke_plane = np.full((1, 40, 40, 1), smoke)
-	wep_plane = np.full((1, 40, 40, 1), wep)
-	time_plane = np.full((1, 40, 40, 1), time)
-	team_plane = np.full((1, 40, 40, 1), team)
-	plant_plane = np.full((1, 40, 40, 1), plant)
+	hp_plane = np.full((1, 20, 20, 1), hp)
+	ammo_plane = np.full((1, 20, 20, 1), ammo)
+	smoke_plane = np.full((1, 20, 20, 1), smoke)
+	wep_plane = np.full((1, 20, 20, 1), wep)
+	time_plane = np.full((1, 20, 20, 1), time)
+	team_plane = np.full((1, 20, 20, 1), team)
+	plant_plane = np.full((1, 20, 20, 1), plant)
 	
 	
-	frames_array = np.reshape(np.array(frames_array), [-1, 40, 40, 20])
+	frames_array = np.reshape(np.array(frames_array), [-1, 20, 20, 20])
 	
 	frames_array = np.concatenate((frames_array, hp_plane), axis=-1)
 	frames_array = np.concatenate((frames_array, ammo_plane), axis=-1)

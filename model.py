@@ -30,7 +30,7 @@ def create_model(filters, resblocks=5):
 		X = Activation('relu')(X)
 		return X
 		
-	image = Input(shape=(40, 40, 27)) #Masked images of last 10 board frames + 6 planes of info
+	image = Input(shape=(20, 20, 27)) #Masked images of last 10 board frames + 7 planes of info
 	
 	#Stem for our resnet
 	X = stem(image, filters)
@@ -81,7 +81,7 @@ def create_model(filters, resblocks=5):
 	latent_MSE = K.sum(K.square(true_latent - new_latent), axis=1)
 	L_h = K.mean(latent_MSE)
 	
-	opt_h = keras.optimizers.Adam(1e-4)
+	opt_h = keras.optimizers.Adam(3e-3)
 	updates_h = opt_h.get_updates(params=hmodel.trainable_weights, loss=L_h)
 	train_fn_h = K.function(inputs=[hmodel.input[0], hmodel.input[1], true_latent],
 						   outputs=[L_h], updates=updates_h)
@@ -93,7 +93,6 @@ def create_model(filters, resblocks=5):
 	#placeholder variables for PPO algorithm
 	target = K.placeholder(shape=(None,1), name="target_value")
 	expert = K.placeholder(shape=(None,63), name="expert_policy")
-	expert = K.clip(expert,K.epsilon(), 1)
 	
 	
 	adv = K.placeholder(shape=(None,1), name="adv")
@@ -102,20 +101,24 @@ def create_model(filters, resblocks=5):
 	
 	MSE = K.sum(K.square(target-value), axis=1)
 	
-	r = K.sum(action*p1/expert, axis=1)
+	y_true = K.clip(expert, K.epsilon(), 1)
+	r = K.sum(action*p1/y_true, axis=1)
 	Lclip = K.minimum(r*adv, K.clip(r, 0.8, 1.2)*adv)
-	entropy = K.sum(p1 * K.log(p1), axis=1)
 	
-	loss = -K.mean(Lclip) + K.mean(MSE) + 0.0001*K.mean(entropy)
+	#Lclip = K.sum(y_true * K.log(p1), axis=-1)
+	#entropy = 0.0001*K.sum(p1 * K.log(p1), axis=1)
+	
+	#Lclip = K.sum(action * K.log(p1), axis=-1) * adv #Just reinforce our results
+	loss = -K.mean(Lclip) + K.mean(MSE) #+ K.mean(entropy)
 	
 	c1_print = -K.mean(Lclip)
 	v_print = K.mean(MSE)
-	e_print = 0.0001*K.mean(entropy)
+	#e_print = -0.01*K.mean(entropy)
 	
 	#optimizer
 	opt = keras.optimizers.Adam(1e-4)
 	updates = opt.get_updates(params=model.trainable_weights, loss=loss)
 	train_fn = K.function(inputs=[model.input, target, expert, adv, action], 
-						  outputs=[c1_print, v_print, e_print], updates=updates)
+						  outputs=[c1_print, v_print], updates=updates)
 	
 	return model, fmodel, gmodel, hmodel, train_fn, train_fn_h

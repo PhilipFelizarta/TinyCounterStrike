@@ -1,12 +1,18 @@
 import numpy as np
 
-def muMCTS(observation, turn, f_model, g_model, h_model, simulations=10000):
+def muMCTS(observation, turn, f_model, g_model, h_model, simulations=10000, dirichlet=True, alpha=10/63):
 	if simulations == 0:
 		hidden_state = f_model.predict(observation)
 		policy, value = g_model.predict(hidden_state)
-		return policy, value
+		return policy, value, policy
 	hidden_state = f_model.predict(observation)
-	policy, _ = g_model.predict(hidden_state)
+	policy, init_value = g_model.predict(hidden_state)
+	init_policy = policy
+	new_priors = np.power(policy, 1/1.0)
+	policy = new_priors/np.sum(new_priors)
+	if dirichlet:
+		dirich = np.random.dirichlet([alpha] * 63)
+		policy = (policy * 0.75) + (0.25 * dirich)
 	root = init_root(hidden_state, policy, turn)
 
 	for i in range(simulations):
@@ -17,9 +23,13 @@ def muMCTS(observation, turn, f_model, g_model, h_model, simulations=10000):
 		action_onehot[0][action] = 1
 		new_state = h_model.predict([state, action_onehot]) #Estimate hidden state
 		policy, value = g_model.predict(new_state) #Get prediction from hidden state
+		new_priors = np.power(policy, 1/1.0)
+		policy = new_priors/np.sum(new_priors)
 		leaf_parent.expand_backup(action, new_state, policy, np.squeeze(value))
 
-	return root.child_plays/np.sum(root.child_plays), np.mean(root.child_Q())
+	val = root.child_Q()[np.argmax(root.child_plays)] #Return the q value of our most visited node
+
+	return root.child_plays/np.sum(root.child_plays), val, init_policy
 
 def init_root(hidden_state, policy, turn): #Handle root case
 	root = Node(None, 0, hidden_state, policy, turn)
@@ -34,7 +44,10 @@ class Node:
 		self.state = state
 
 		self.child_plays = np.zeros([63], dtype=np.int32) #Keep track of how many times our children have played
-		self.child_values = np.zeros([63], dtype=np.float32) #Keep track of the sum of q values
+		fpu = 1.0
+		if not turn:
+			fpu = -fpu
+		self.child_values = np.full([63], fpu, dtype=np.float32) #Keep track of the sum of q values
 
 		self.children = [None]*63 #A list of children, there will 1924 of them.. no python chess to tell us less children
 
@@ -66,9 +79,9 @@ class Node:
 		current = self
 		parent = self
 		depth = 0
-		while current is not None and depth <= depth_max:
+		while current is not None:
 			parent = current
-			current, action = self.pUCT_child()
+			current, action = current.pUCT_child()
 			depth += 1
 		return parent, parent.state, action #Action must be converted to one-hot or other formatting in search function
 

@@ -1,3 +1,4 @@
+#Environment
 import numpy as np
 from enum import Enum
 
@@ -13,7 +14,7 @@ class Direction(Enum):
 
 class Board:
 	def __init__(self):
-		self.size = 20
+		self.size = 10
 		self.players = [] #Define a list of players on the map
 		self.boxes = [] #Define a list for the boxes on the map
 		self.observation = np.zeros((2, 2*self.size, 2*self.size))
@@ -26,9 +27,9 @@ class Board:
 			t_x = i - self.size
 			for j in range(int(self.size*2)):
 				t_y = j - self.size
-				for box in self.boxes:
+				for box in self.boxes: #Box plane
 					if box.in_box(t_x, t_y):
-						self.observation[0][j][i] = 1
+						self.observation[1][j][i] = 1
 						break
 
 				for player in self.players:
@@ -45,11 +46,33 @@ class Board:
 					if t_x == player.x and t_y == player.y:
 						self.observation[0][j][i] = 1
 						break
+
+				for box in self.boxes:
+					if box.in_box(t_x, t_y):
+						self.observation[1][j][i] = 1
+						break
+
+
+
 	def in_bombsite(self, objectx, objecty):
-		if objectx <= 5 and objectx >= -5:
+		if objectx <= -5 and objectx >= -8:
+			if objecty <= -2 and objecty >= -6:
+				return True
+		elif objectx <= 10 and objectx >= 5:
 			if objecty <= 5 and objecty >= -5:
 				return True
 		return False
+
+	def dist_to_site(self, objectx, objecty):
+		distA = (objectx - 7.5)**2 + (objecty)**2
+		d1 = (7.5)**2 + (8.0)**2
+		distA = 1 - (distA/d1)
+
+		distB = (objectx + 6.5)**2 + (objecty + 4)**2
+		d2 = (6.5)**2 + (12)**2
+		distB = 1 - (distB/d2)
+		reward = np.maximum(distA, distB)
+		return reward
 	
 	def add_player(self, player):
 		self.players.append(player)
@@ -64,8 +87,9 @@ class Board:
 		return False
 	
 class Box:
-	def __init__(self, size, centerX, centerY, board, passable=False):
-		self.size = size
+	def __init__(self, width, height,  centerX, centerY, board, passable=False):
+		self.w = width
+		self.h = height
 		self.x = centerX
 		self.y = centerY
 		self.board = board
@@ -75,11 +99,13 @@ class Box:
 	
 	def in_box(self, objectx, objecty):
 		if not self.passable:
-			if objectx <= self.x + self.size/2 and objectx >= self.x - self.size/2:
-				if objecty <= self.y + self.size/2 and objecty >= self.y - self.size/2:
+			if objectx <= self.x + self.w/2 and objectx >= self.x - self.w/2:
+				if objecty <= self.y + self.h/2 and objecty >= self.y - self.h/2:
 					return True
 		return False
 		
+		
+
 class Weapon:
 	def __init__(self, damage, rate, clip, speed, range):
 		self.damage = damage 
@@ -107,7 +133,7 @@ class Player:
 	
 	def view_mask(self): #return a mask of what pixels the player can see(1 where you can view and 0 where you cannot)
 		view_width = 11 #how many units wide their view is
-		view_length = 40 #how far they can see
+		view_length = self.board.size #how far they can see
 		mask = np.zeros((self.board.size*2, self.board.size*2))
 		
 		perp_view = self.view + np.deg2rad(90)
@@ -119,12 +145,12 @@ class Player:
 				rise = t*np.sin(self.view)
 				run = t*np.cos(self.view)
 				
-				viewx = int(offsetx + run + self.x) + 20
-				viewy = int(offsety + rise + self.y) + 20
+				viewx = int(offsetx + run + self.x) + self.board.size
+				viewy = int(offsety + rise + self.y) + self.board.size
 				
-				if viewx >= 0 and viewx <= 39:
-					if viewy >= 0 and viewy <= 39:
-						if self.board.observation[0][viewy][viewx] == 1: #There is a box on this pixel
+				if viewx >= 0 and viewx <= self.board.size-1:
+					if viewy >= 0 and viewy <= self.board.size-1:
+						if self.board.observation[1][viewy][viewx] == 1: #There is a box on this pixel
 							break #Don't look any further!
 						mask[viewy][viewx] = 1
 		
@@ -161,7 +187,7 @@ class Player:
 	def plant(self): #Plant the bomb
 		if self.bomb: #If you have the bomb
 			if self.board.in_bombsite(self.x, self.y): #If you are in the bombsite
-				box = Box(0.5, self.x, self.y, self.board, passable=True) #Create a box of 0.5 at ur location
+				box = Box(0.5, 0.5, self.x, self.y, self.board, passable=True) #Create a box of 0.5 at ur location
 				self.board.bomb = box
 				self.bomb = False
 				return True
@@ -178,9 +204,9 @@ class Player:
 	def fire_smoke(self):
 		if self.smoke: #If a smoke is in your inventory
 			#smoke has range of 15
-			smokeX = 15 * np.cos(self.view) + self.x
-			smokeY = 15 * np.sin(self.view) + self.y
-			smoke = Box(5, smokeX, smokeY, self.board, passable=True)
+			smokeX = 7.5 * np.cos(self.view) + self.x
+			smokeY = 7.5 * np.sin(self.view) + self.y
+			smoke = Box(3, 3, smokeX, smokeY, self.board, passable=True)
 			self.smoke = False
 					
 	
@@ -206,9 +232,9 @@ class Player:
 							for j in range(len(self.board.boxes)):
 								box = self.board.boxes[j]
 								if not box.passable:
-									for k in range(10):
-										bx = (k/10)*scalar * vectX + self.x
-										by = (k/10)*scalar * vectY + self.y
+									for k in range(100):
+										bx = (k/100)*scalar * vectX + self.x
+										by = (k/100)*scalar * vectY + self.y
 										if box.in_box(bx, by):
 											cancel = True
 											break
