@@ -27,24 +27,24 @@ def to_Direction(action_policy, temp=1.0):
 	elif choice <= 62:
 		action = -3
 	
-	if choice % size == 0:
-		view_angle = np.deg2rad(-90)
-	elif choice % size == 1:
-		view_angle = np.deg2rad(-45)
-	elif choice % size == 2:
-		view_angle = np.deg2rad(-27.5)
-	elif choice % size == 3:
-		view_angle = np.deg2rad(-13.75)
-	elif choice % size == 4:
+	if choice % 9 == 0:
 		view_angle = np.deg2rad(0)
-	elif choice % size == 5:
-		view_angle = np.deg2rad(13.75)
-	elif choice % size == 6:
-		view_angle = np.deg2rad(27.5)
-	elif choice % size == 7:
-		view_angle = np.deg2rad(45)
-	elif choice % size == 8:
-		view_angle = np.deg2rad(90)
+	elif choice % 9 == 1:
+		view_angle = np.deg2rad(40)
+	elif choice % 9 == 2:
+		view_angle = np.deg2rad(80)
+	elif choice % 9 == 3:
+		view_angle = np.deg2rad(120)
+	elif choice % 9 == 4:
+		view_angle = np.deg2rad(160)
+	elif choice % 9 == 5:
+		view_angle = np.deg2rad(200)
+	elif choice % 9 == 6:
+		view_angle = np.deg2rad(240)
+	elif choice % 9 == 7:
+		view_angle = np.deg2rad(280)
+	elif choice % 9 == 8:
+		view_angle = np.deg2rad(320)
 	
 	return action, view_angle, onehot      
 
@@ -59,6 +59,8 @@ def data_to_planes(data, frames_array):
 	ammo = data[4]/30
 	smoke = data[5]
 	plant = data[6]
+	view = data[7] / (2*np.pi)
+
 	if team == Team.CT:
 		team = 1
 	else:
@@ -79,9 +81,11 @@ def data_to_planes(data, frames_array):
 	time_plane = np.full((1, 20, 20, 1), time)
 	team_plane = np.full((1, 20, 20, 1), team)
 	plant_plane = np.full((1, 20, 20, 1), plant)
+	view_plane = np.full((1, 20, 20, 1), view)
 	
 	
 	frames_array = np.reshape(np.array(frames_array), [-1, 20, 20, 20])
+	frames_array = np.swapaxes(frames_array,3,1)
 	
 	frames_array = np.concatenate((frames_array, hp_plane), axis=-1)
 	frames_array = np.concatenate((frames_array, ammo_plane), axis=-1)
@@ -90,6 +94,7 @@ def data_to_planes(data, frames_array):
 	frames_array = np.concatenate((frames_array, time_plane), axis=-1)
 	frames_array = np.concatenate((frames_array, team_plane), axis=-1)
 	frames_array = np.concatenate((frames_array, plant_plane), axis=-1)
+	frames_array = np.concatenate((frames_array, view_plane), axis=-1)
 	
 	return frames_array
 

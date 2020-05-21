@@ -30,7 +30,7 @@ def create_model(filters, resblocks=5):
 		X = Activation('relu')(X)
 		return X
 		
-	image = Input(shape=(20, 20, 27)) #Masked images of last 10 board frames + 7 planes of info
+	image = Input(shape=(20, 20, 28)) #Masked images of last 10 board frames + 7 planes of info
 	
 	#Stem for our resnet
 	X = stem(image, filters)

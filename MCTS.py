@@ -13,7 +13,7 @@ def muMCTS(observation, turn, f_model, g_model, h_model, simulations=10000, diri
 	if dirichlet:
 		dirich = np.random.dirichlet([alpha] * 63)
 		policy = (policy * 0.75) + (0.25 * dirich)
-	root = init_root(hidden_state, policy, turn)
+	root = init_root(hidden_state, policy, turn, init_value)
 
 	for i in range(simulations):
 		#print("Simulation: ", i)
@@ -31,12 +31,12 @@ def muMCTS(observation, turn, f_model, g_model, h_model, simulations=10000, diri
 
 	return root.child_plays/np.sum(root.child_plays), val, init_policy
 
-def init_root(hidden_state, policy, turn): #Handle root case
-	root = Node(None, 0, hidden_state, policy, turn)
+def init_root(hidden_state, policy, turn, fpu): #Handle root case
+	root = Node(None, 0, hidden_state, policy, turn, fpu)
 	return root
 
 class Node:
-	def __init__(self, parent, index, state, policy, turn): #On init we need to define the parent and the index the node is in the parent child array
+	def __init__(self, parent, index, state, policy, turn, fpu): #On init we need to define the parent and the index the node is in the parent child array
 		self.parent = parent
 		self.index = index
 		self.turn = turn #Boolean to switch our pUCT conditions
@@ -44,9 +44,6 @@ class Node:
 		self.state = state
 
 		self.child_plays = np.zeros([63], dtype=np.int32) #Keep track of how many times our children have played
-		fpu = 1.0
-		if not turn:
-			fpu = -fpu
 		self.child_values = np.full([63], fpu, dtype=np.float32) #Keep track of the sum of q values
 
 		self.children = [None]*63 #A list of children, there will 1924 of them.. no python chess to tell us less children
@@ -87,9 +84,9 @@ class Node:
 
 	def expand_backup(self, index, new_state, policy, value): #Create a child at index with state and policy
 		#print("expanding")
-		child = Node(self, index, new_state, policy, self.turn) #Counterfactual regret
+		child = Node(self, index, new_state, policy, not self.turn, value) #Counterfactual regret
 		self.children[index] = child
-		self.child_values[index] = value
+		self.child_values[index] += value
 		self.child_plays[index] += 1
 		self.backup(value)
 
@@ -97,6 +94,6 @@ class Node:
 		#print("backing")
 		current = self
 		while current.parent != None:
-			current.parent.child_values[self.index] += value
-			current.parent.child_plays[self.index] += 1
+			current.parent.child_values[current.index] += value
+			current.parent.child_plays[current.index] += 1
 			current = current.parent

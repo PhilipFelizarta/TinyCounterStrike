@@ -27,32 +27,36 @@ class Board:
 			t_x = i - self.size
 			for j in range(int(self.size*2)):
 				t_y = j - self.size
+
+				if self.in_bombsite(t_x, t_y):
+					self.observation[1][j][i] = -0.5
+
+
+				for player in self.players:
+					if t_x == player.x and t_y == player.y:
+						if player.team == Team.T:
+							self.observation[0][j][i] = -0.1
+						else:
+							self.observation[0][j][i] = -0.5
+
+						break
+					else:
+						self.observation[0][j][i] = 1
+
 				for box in self.boxes: #Box plane
 					if box.in_box(t_x, t_y):
-						self.observation[1][j][i] = 1
+						val = 1
+						if box.passable:
+							val = 0.5
+
+						if box.bomb:
+							val = -1
+
+						self.observation[1][j][i] = val
+						self.observation[0][j][i] = 0
 						break
 
-				for player in self.players:
-					if t_x == player.x and t_y == player.y:
-						self.observation[0][j][i] = 1
-						break
-	
-	def update_observation(self): #Boxes are stationary and so you do not need to update this
-		for i in range(int(self.size*2)):
-			t_x = i - self.size
-			for j in range(int(self.size*2)):
-				t_y = j - self.size
-				for player in self.players:
-					if t_x == player.x and t_y == player.y:
-						self.observation[0][j][i] = 1
-						break
-
-				for box in self.boxes:
-					if box.in_box(t_x, t_y):
-						self.observation[1][j][i] = 1
-						break
-
-
+				
 
 	def in_bombsite(self, objectx, objecty):
 		if objectx <= -5 and objectx >= -8:
@@ -81,27 +85,27 @@ class Board:
 		self.boxes.append(box)
 	
 	def in_board(self, objectx, objecty):
-		if objectx <= self.size and objectx >= -self.size:
-			if objecty <= self.size and objecty >= -self.size:
+		if objectx <= self.size-1 and objectx >= -self.size:
+			if objecty <= self.size-1 and objecty >= -self.size:
 				return True
 		return False
 	
 class Box:
-	def __init__(self, width, height,  centerX, centerY, board, passable=False):
+	def __init__(self, width, height,  centerX, centerY, board, passable=False, bomb=False):
 		self.w = width
 		self.h = height
 		self.x = centerX
 		self.y = centerY
 		self.board = board
+		self.bomb = bomb
 		self.passable = passable
 		self.board.add_box(self)
 		
 	
 	def in_box(self, objectx, objecty):
-		if not self.passable:
-			if objectx <= self.x + self.w/2 and objectx >= self.x - self.w/2:
-				if objecty <= self.y + self.h/2 and objecty >= self.y - self.h/2:
-					return True
+		if objectx <= self.x + self.w/2 and objectx >= self.x - self.w/2:
+			if objecty <= self.y + self.h/2 and objecty >= self.y - self.h/2:
+				return True
 		return False
 		
 		
@@ -148,9 +152,9 @@ class Player:
 				viewx = int(offsetx + run + self.x) + self.board.size
 				viewy = int(offsety + rise + self.y) + self.board.size
 				
-				if viewx >= 0 and viewx <= self.board.size-1:
-					if viewy >= 0 and viewy <= self.board.size-1:
-						if self.board.observation[1][viewy][viewx] == 1: #There is a box on this pixel
+				if viewx >= 0 and viewx <= 2*self.board.size-1:
+					if viewy >= 0 and viewy <= 2*self.board.size-1:
+						if self.board.observation[1][viewy][viewx] > 0: #There is a box on this pixel
 							break #Don't look any further!
 						mask[viewy][viewx] = 1
 		
@@ -172,8 +176,9 @@ class Player:
 			
 			for box in self.board.boxes: #Check movement collisions with boxes
 				if box.in_box(self.x, self.y):
-					self.x = tempx
-					self.y = tempy
+					if not box.passable:
+						self.x = tempx
+						self.y = tempy
 			
 			if not self.board.in_board(self.x, self.y):
 				self.x = tempx
@@ -187,7 +192,7 @@ class Player:
 	def plant(self): #Plant the bomb
 		if self.bomb: #If you have the bomb
 			if self.board.in_bombsite(self.x, self.y): #If you are in the bombsite
-				box = Box(0.5, 0.5, self.x, self.y, self.board, passable=True) #Create a box of 0.5 at ur location
+				box = Box(1.0, 1.0, self.x, self.y, self.board, passable=True, bomb=True) #Create a box of 1.0 at ur location
 				self.board.bomb = box
 				self.bomb = False
 				return True
