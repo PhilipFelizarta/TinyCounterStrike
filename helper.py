@@ -121,7 +121,7 @@ def load_model(modelFile, weightFile, update=False): #load model from json and H
 	if not update:
 		load_model = model_from_json(load_model_json)
 	else:
-		load_model = create_model()
+		load_model = create_model(64)
 	load_model.load_weights(weightFile)
 	print("Model Loaded!")
 	return load_model

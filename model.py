@@ -4,7 +4,7 @@ def create_model(filters, resblocks=5):
 	import numpy as np
 
 	from keras.models import Model
-	from keras.layers import Input, Add, Dense, Activation, ZeroPadding2D, BatchNormalization, Flatten, Conv2D, MaxPooling2D, AveragePooling2D, Concatenate, Dropout, AlphaDropout
+	from keras.layers import Input, Add, Dense, Activation, ZeroPadding2D, BatchNormalization, Flatten, Conv2D, MaxPooling2D, AveragePooling2D, Concatenate, Dropout, AlphaDropout, Lambda
 	from keras.layers import GlobalAveragePooling2D, Multiply, Permute, Reshape
 	from keras.optimizers import SGD
 	from keras.initializers import glorot_uniform
@@ -13,20 +13,31 @@ def create_model(filters, resblocks=5):
 
 	lambd = 0.001 #L2 regularization
 
+	class Invert(keras.layers.Layer):
+		def __init__(self):
+			super(Invert, self).__init__()
+
+		def call(self, inputs):
+			one = K.ones(1)
+			return one - inputs
+
 	def stem(X, filters, stage="stem", size=3):
-		stem = Conv2D(filters=filters, kernel_size=(size,size), strides=(1,1), padding='same', data_format='channels_last', 
+		stem = Conv2D(filters=filters, kernel_size=(size,size), strides=(2,2), padding='valid', data_format='channels_last', 
 					  name='Conv_' + stage, kernel_initializer=glorot_uniform(), kernel_regularizer=l2(lambd))(X)
+		stem = BatchNormalization(axis=-1)(stem)
 		stem = Activation('relu')(stem)
 		return stem
 
 	def res_block(X, filters, block, size=3):
 		res = Conv2D(filters=filters, kernel_size=(size,size), strides=(1,1), padding='same', data_format='channels_last', 
 					name='res_block1_' + block, kernel_initializer=glorot_uniform(), kernel_regularizer=l2(lambd))(X)
+		res = BatchNormalization(axis=-1)(res)
 		res = Activation('relu')(res)
 		res = Conv2D(filters=filters, kernel_size=(size,size), strides=(1,1), padding='same', data_format='channels_last', 
 					name='res_block2_' + block, kernel_initializer=glorot_uniform(), kernel_regularizer=l2(lambd))(res)
 		
 		X = Add()([X, res])
+		X = BatchNormalization(axis=-1)(X)
 		X = Activation('relu')(X)
 		return X
 		
@@ -40,9 +51,9 @@ def create_model(filters, resblocks=5):
 		X = res_block(X, filters, str(i + 1))
 	
 	#Create latent representation
-	latent = stem(X, 1, stage="latent", size=1)
+	latent = stem(X, 32, stage="latent", size=1)
 	latent = Flatten()(latent)
-	latent = Dense(50, activation="sigmoid", name="latentspace", kernel_initializer=glorot_uniform(),
+	latent = Dense(50, activation="tanh", name="latentspace", kernel_initializer=glorot_uniform(),
 				kernel_regularizer = l2(lambd))(latent)
 	
 	#Create state -> hidden state model
@@ -70,9 +81,24 @@ def create_model(filters, resblocks=5):
 	#Create hidden state -> hidden state model (MCTS in LATENT SPACE)
 	p_latent = Input(shape=(50,))
 	new_policy = Input(shape=(63,))
-	concat_input = Concatenate(axis=-1)([new_policy, p_latent])
-	new_latent = Dense(50, activation="sigmoid", name="new_latent", kernel_initializer=glorot_uniform(),
-				kernel_regularizer = l2(lambd))(concat_input)
+
+	concat_1 = Concatenate(axis=-1)([p_latent, new_policy])
+	#Update Gate
+	z = Dense(50, activation="sigmoid")(concat_1)
+
+	#Reset Gate
+	r = Dense(50, activation="sigmoid")(concat_1)
+	r = Multiply()([r, p_latent])
+
+	#Output gate
+	sub = Invert()(z)
+	new_latent = Multiply()([sub, p_latent])
+
+	concat_2 = Concatenate(axis=-1)([r, new_policy])
+	h = Dense(50, activation="tanh")(concat_2)
+	h = Multiply()([h, z])
+
+	new_latent = Add()([new_latent, h])
 	hmodel = Model(inputs=[p_latent, new_policy], outputs=new_latent)
 	
 	
@@ -106,19 +132,22 @@ def create_model(filters, resblocks=5):
 	Lclip = K.minimum(r*adv, K.clip(r, 0.8, 1.2)*adv)
 	
 	#Lclip = K.sum(y_true * K.log(p1), axis=-1)
-	#entropy = 0.0001*K.sum(p1 * K.log(p1), axis=1)
+	entropy = 0.01*K.sum(p1 * K.log(p1), axis=-1) #Negative entropy
 	
 	#Lclip = K.sum(action * K.log(p1), axis=-1) * adv #Just reinforce our results
-	loss = -K.mean(Lclip) + K.mean(MSE) #+ K.mean(entropy)
+	#Lclip = K.sum(y_true * K.log(p1), axis=-1)  + adv*K.sum(action*p1, axis=-1) #L NASH
+	loss = -K.mean(Lclip) + K.mean(MSE) + K.mean(entropy)
 	
 	c1_print = -K.mean(Lclip)
 	v_print = K.mean(MSE)
 	#e_print = -0.01*K.mean(entropy)
 	
 	#optimizer
-	opt = keras.optimizers.Adam(1e-4)
+	opt = keras.optimizers.Adam(3e-3)
 	updates = opt.get_updates(params=model.trainable_weights, loss=loss)
 	train_fn = K.function(inputs=[model.input, target, expert, adv, action], 
 						  outputs=[c1_print, v_print], updates=updates)
+	model.summary()
+	hmodel.summary()
 	
 	return model, fmodel, gmodel, hmodel, train_fn, train_fn_h

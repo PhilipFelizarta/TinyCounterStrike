@@ -1,6 +1,6 @@
 import numpy as np
 
-def muMCTS(observation, turn, f_model, g_model, h_model, simulations=10000, dirichlet=True, alpha=10/63):
+def muMCTS(observation, turn, f_model, g_model, h_model, simulations=10000, dirichlet=False, alpha=10.0/(63.0)):
 	if simulations == 0:
 		hidden_state = f_model.predict(observation)
 		policy, value = g_model.predict(hidden_state)
@@ -8,7 +8,7 @@ def muMCTS(observation, turn, f_model, g_model, h_model, simulations=10000, diri
 	hidden_state = f_model.predict(observation)
 	policy, init_value = g_model.predict(hidden_state)
 	init_policy = policy
-	new_priors = np.power(policy, 1/1.0)
+	new_priors = np.power(policy, 1/2.2)
 	policy = new_priors/np.sum(new_priors)
 	if dirichlet:
 		dirich = np.random.dirichlet([alpha] * 63)
@@ -23,13 +23,13 @@ def muMCTS(observation, turn, f_model, g_model, h_model, simulations=10000, diri
 		action_onehot[0][action] = 1
 		new_state = h_model.predict([state, action_onehot]) #Estimate hidden state
 		policy, value = g_model.predict(new_state) #Get prediction from hidden state
-		new_priors = np.power(policy, 1/1.0)
+		new_priors = np.power(policy, 1/2.2)
 		policy = new_priors/np.sum(new_priors)
 		leaf_parent.expand_backup(action, new_state, policy, np.squeeze(value))
 
-	val = root.child_Q()[np.argmax(root.child_plays)] #Return the q value of our most visited node
+	#val = root.child_Q()[np.argmax(root.child_plays)] #Return the q value of our most visited node
 
-	return root.child_plays/np.sum(root.child_plays), val, init_policy
+	return root.child_plays/np.sum(root.child_plays), root.child_Q(), init_policy
 
 def init_root(hidden_state, policy, turn, fpu): #Handle root case
 	root = Node(None, 0, hidden_state, policy, turn, fpu)
@@ -43,8 +43,13 @@ class Node:
 		self.policy = policy
 		self.state = state
 
+		fpu_red = 0.0
+		if not turn:
+			fpu_red = 0.0
+
+
 		self.child_plays = np.zeros([63], dtype=np.int32) #Keep track of how many times our children have played
-		self.child_values = np.full([63], fpu, dtype=np.float32) #Keep track of the sum of q values
+		self.child_values = np.full([63], np.clip(fpu - fpu_red, -1, 1), dtype=np.float32) #Keep track of the sum of q values
 
 		self.children = [None]*63 #A list of children, there will 1924 of them.. no python chess to tell us less children
 
@@ -53,7 +58,7 @@ class Node:
 
 	def child_U(self): #return puct bound
 		#DEFINE HYPERPARAMETERS HERE
-		c1 = 1.2
+		c1 = 2.5
 		c2 = 19652
 
 		#Define sum of plays among the children
@@ -84,7 +89,7 @@ class Node:
 
 	def expand_backup(self, index, new_state, policy, value): #Create a child at index with state and policy
 		#print("expanding")
-		child = Node(self, index, new_state, policy, not self.turn, value) #Counterfactual regret
+		child = Node(self, index, new_state, policy, self.turn, value) #Counterfactual regret
 		self.children[index] = child
 		self.child_values[index] += value
 		self.child_plays[index] += 1
